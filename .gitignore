@@ -101,3 +101,6 @@ cmake-build-*
 third-party/folly/
 .cache
 *.sublime-*
+
+release/
+debug/

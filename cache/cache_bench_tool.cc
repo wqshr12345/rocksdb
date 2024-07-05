@@ -191,8 +191,7 @@ namespace {
 class SharedState {
  public:
   explicit SharedState(CacheBench* cache_bench)
-      : cv_(&mu_),
-        cache_bench_(cache_bench) {}
+      : cv_(&mu_), cache_bench_(cache_bench) {}
 
   ~SharedState() = default;
 
@@ -247,6 +246,9 @@ struct ThreadState {
   Random64 rnd;
   SharedState* shared;
   HistogramImpl latency_ns_hist;
+  HistogramImpl insert_ns_hist;
+  HistogramImpl lookup_ns_hist;
+  HistogramImpl erase_ns_hist;
   uint64_t duration_us = 0;
 
   ThreadState(uint32_t index, SharedState* _shared)
@@ -542,10 +544,22 @@ class CacheBench {
     if (FLAGS_histograms) {
       printf("\nOperation latency (ns):\n");
       HistogramImpl combined;
+      HistogramImpl insert_combined;
+      HistogramImpl lookup_combined;
+      HistogramImpl erase_combined;
       for (uint32_t i = 0; i < FLAGS_threads; i++) {
         combined.Merge(threads[i]->latency_ns_hist);
+        insert_combined.Merge(threads[i]->insert_ns_hist);
+        lookup_combined.Merge(threads[i]->lookup_ns_hist);
+        erase_combined.Merge(threads[i]->erase_ns_hist);
       }
       printf("%s", combined.ToString().c_str());
+      printf("\nInsert latency (ns):\n");
+      printf("%s", insert_combined.ToString().c_str());
+      printf("\nLookup latency (ns):\n");
+      printf("%s", lookup_combined.ToString().c_str());
+      printf("\nErase latency (ns):\n");
+      printf("%s", erase_combined.ToString().c_str());
 
       if (FLAGS_gather_stats) {
         printf("\nGather stats latency (us):\n");
@@ -696,6 +710,7 @@ class CacheBench {
     const auto clock = SystemClock::Default().get();
     uint64_t start_time = clock->NowMicros();
     StopWatchNano timer(clock);
+    StopWatchNano spec_timer(clock);
     auto system_clock = SystemClock::Default();
     size_t steps_to_next_capacity_change = 0;
 
@@ -742,9 +757,11 @@ class CacheBench {
         }
       } else if (random_op < insert_threshold_) {
         // do insert
-        Status s = cache_->Insert(
-            key, createValue(thread->rnd, cache_->memory_allocator()), &helper3,
-            FLAGS_value_bytes, &pinned.emplace_back());
+        auto value = createValue(thread->rnd, cache_->memory_allocator());
+        spec_timer.Start();
+        Status s = cache_->Insert(key, value, &helper3, FLAGS_value_bytes,
+                                  &pinned.emplace_back());
+        thread->insert_ns_hist.Add(spec_timer.ElapsedNanos());
         assert(s.ok());
       } else if (random_op < blind_insert_threshold_) {
         // insert without keeping a handle
@@ -754,8 +771,10 @@ class CacheBench {
         assert(s.ok());
       } else if (random_op < lookup_threshold_) {
         // do lookup
+        spec_timer.Start();
         auto handle = cache_->Lookup(key, &helper2, /*context*/ nullptr,
                                      Cache::Priority::LOW);
+        thread->lookup_ns_hist.Add(spec_timer.ElapsedNanos());
         if (handle) {
           ++lookup_hits;
           if (!FLAGS_lean) {
@@ -769,7 +788,9 @@ class CacheBench {
         }
       } else if (random_op < erase_threshold_) {
         // do erase
+        spec_timer.Start();
         cache_->Erase(key);
+        thread->erase_ns_hist.Add(spec_timer.ElapsedNanos());
       } else {
         // Should be extremely unlikely (noop)
         assert(random_op >= kHundredthUint64 * 100U);

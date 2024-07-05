@@ -11,7 +11,7 @@
 #ifndef GFLAGS_NAMESPACE
 // in case it's not defined in old versions, that's probably because it was
 // still google by default.
-#define GFLAGS_NAMESPACE google
+#define GFLAGS_NAMESPACE gflags
 #endif
 
 #ifndef DEFINE_uint32

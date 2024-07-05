@@ -19,6 +19,7 @@
 
 #include "cache/cache_key.h"
 #include "cache/sharded_cache.h"
+#include "monitoring/histogram.h"
 #include "port/lang.h"
 #include "port/malloc.h"
 #include "port/mmap.h"
@@ -640,7 +641,7 @@ class FixedHyperClockTable : public BaseClockTable {
   template <typename MatchFn, typename AbortFn, typename UpdateFn>
   inline HandleImpl* FindSlot(const UniqueId64x2& hashed_key,
                               const MatchFn& match_fn, const AbortFn& abort_fn,
-                              const UpdateFn& update_fn);
+                              const UpdateFn& update_fn, uint8_t type);
 
   // Re-decrement all displacements in probe path starting from beginning
   // until (not including) the given handle
@@ -673,6 +674,11 @@ class FixedHyperClockTable : public BaseClockTable {
 
   // Array of slots comprising the hash table.
   const std::unique_ptr<HandleImpl[]> array_;
+
+  // Statics for seek times.
+  HistogramImpl insert_times_hist_;
+  HistogramImpl lookup_times_hist_;
+  HistogramImpl erase_times_hist_;
 };  // class FixedHyperClockTable
 
 // Hash table for cache entries that resizes automatically based on occupancy.

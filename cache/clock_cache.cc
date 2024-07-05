@@ -30,6 +30,7 @@
 #include "monitoring/statistics_impl.h"
 #include "port/lang.h"
 #include "rocksdb/env.h"
+#include "util/defer.h"
 #include "util/hash.h"
 #include "util/math.h"
 #include "util/random.h"
@@ -763,6 +764,10 @@ FixedHyperClockTable::~FixedHyperClockTable() {
         break;
     }
   }
+  printf("Seek Times\n");
+  printf("Insert: %s", insert_times_hist_.ToString().c_str());
+  printf("Lookup: %s", lookup_times_hist_.ToString().c_str());
+  printf("Erase: %s", erase_times_hist_.ToString().c_str());
 
 #ifndef NDEBUG
   for (size_t i = 0; i < GetTableSize(); i++) {
@@ -808,7 +813,8 @@ FixedHyperClockTable::HandleImpl* FixedHyperClockTable::DoInsert(
         } else {
           h->displacements.FetchAddRelaxed(1);
         }
-      });
+      },
+      0);
   if (already_matches) {
     // Insertion skipped
     return nullptr;
@@ -885,7 +891,7 @@ FixedHyperClockTable::HandleImpl* FixedHyperClockTable::Lookup(
         return false;
       },
       [&](HandleImpl* h) { return h->displacements.LoadRelaxed() == 0; },
-      [&](HandleImpl* /*h*/, bool /*is_last*/) {});
+      [&](HandleImpl* /*h*/, bool /*is_last*/) {}, 1);
 
   return e;
 }
@@ -1033,7 +1039,7 @@ void FixedHyperClockTable::Erase(const UniqueId64x2& hashed_key) {
         return false;
       },
       [&](HandleImpl* h) { return h->displacements.LoadRelaxed() == 0; },
-      [&](HandleImpl* /*h*/, bool /*is_last*/) {});
+      [&](HandleImpl* /*h*/, bool /*is_last*/) {}, 2);
 }
 
 void FixedHyperClockTable::EraseUnRefEntries() {
@@ -1058,7 +1064,7 @@ void FixedHyperClockTable::EraseUnRefEntries() {
 template <typename MatchFn, typename AbortFn, typename UpdateFn>
 inline FixedHyperClockTable::HandleImpl* FixedHyperClockTable::FindSlot(
     const UniqueId64x2& hashed_key, const MatchFn& match_fn,
-    const AbortFn& abort_fn, const UpdateFn& update_fn) {
+    const AbortFn& abort_fn, const UpdateFn& update_fn, uint8_t type) {
   // NOTE: upper 32 bits of hashed_key[0] is used for sharding
   //
   // We use double-hashing probing. Every probe in the sequence is a
@@ -1075,7 +1081,22 @@ inline FixedHyperClockTable::HandleImpl* FixedHyperClockTable::FindSlot(
   size_t first = ModTableSize(base);
   size_t current = first;
   bool is_last;
+  int seek_times = 0;
+  Defer defer([&type, &seek_times, this]() {
+    switch (type) {
+      case 0:
+        insert_times_hist_.Add(seek_times);
+        break;
+      case 1:
+        lookup_times_hist_.Add(seek_times);
+        break;
+      case 2:
+        erase_times_hist_.Add(seek_times);
+        break;
+    }
+  });
   do {
+    seek_times++;
     HandleImpl* h = &array_[current];
     if (match_fn(h)) {
       return h;
